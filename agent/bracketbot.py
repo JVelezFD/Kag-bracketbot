@@ -1,17 +1,23 @@
 """
 BracketBot — Manager Agent
 Orchestrates the full conversation using Google ADK.
-Delegates to specialized subagents based on conversation state.
-Maintains session memory so organizers can build their bracket step by step.
+Uses direct field extraction for reliability, Gemini for conversational warmth.
+Handles the updated naming/seeding flow with conditional branching.
 """
 
 import os
 import re
 import json
-import google.generativeai as genai
+import google.genai as genai
+from google.genai import types
 from dotenv import load_dotenv
 
-from agent.conversation import ConversationSubagent, sanitize_input, extract_player_count
+from agent.conversation import (
+    ConversationSubagent,
+    sanitize_input,
+    extract_player_count,
+    parse_names_from_message,
+)
 from agent.bracket_engine import generate_bracket
 from agent.progression import BracketProgressionSubagent
 from agent.prompts import (
@@ -25,70 +31,145 @@ from tools.format_tool import format_advisor_tool
 load_dotenv()
 
 
-def _configure_gemini() -> genai.GenerativeModel:
-    """
-    Load the Gemini API key from environment and return a configured model.
-    Raises a clear error if the key is missing so the user knows exactly what to fix.
-    """
+def _configure_gemini() -> genai.Client:
+    """Load API key and return a configured Gemini client."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError(
             "GEMINI_API_KEY is not set. "
             "Copy .env.example to .env and add your Gemini API key."
         )
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=MANAGER_SYSTEM_PROMPT,
-    )
+    return genai.Client(api_key=api_key)
+
+
+def _direct_extract(message: str, field: str, convo: ConversationSubagent) -> bool:
+    """
+    Extract a field value directly from the message using pattern matching.
+    Returns True if a value was found and saved.
+    This is the primary extraction method — no API call needed.
+    """
+    msg = message.strip()
+    msg_lower = msg.lower()
+
+    if field == "event_name":
+        if msg and len(msg) < 120 and not msg.startswith("__"):
+            convo.update_state("event_name", msg)
+            return True
+
+    elif field == "sport":
+        if msg and len(msg) < 80:
+            convo.update_state("sport", msg)
+            return True
+
+    elif field == "player_count":
+        count = extract_player_count(msg)
+        if count:
+            convo.update_state("player_count", count)
+            return True
+
+    elif field == "individual_or_team":
+        if any(w in msg_lower for w in ["team", "teams", "club", "clubs"]):
+            convo.update_state("individual_or_team", "team")
+            return True
+        elif any(w in msg_lower for w in ["individual", "singles", "solo", "player", "players", "person"]):
+            convo.update_state("individual_or_team", "individual")
+            return True
+        elif len(msg) < 30:
+            convo.update_state("individual_or_team", msg)
+            return True
+
+    elif field == "bracket_format":
+        if any(w in msg_lower for w in ["double", "double elim"]):
+            convo.update_state("bracket_format", "Double Elimination")
+            return True
+        elif any(w in msg_lower for w in ["single", "single elim"]):
+            convo.update_state("bracket_format", "Single Elimination")
+            return True
+        elif any(w in msg_lower for w in ["round robin", "robin"]):
+            convo.update_state("bracket_format", "Round Robin")
+            return True
+        elif any(w in msg_lower for w in ["pool", "pools"]):
+            convo.update_state("bracket_format", "Double Elimination with Pool Play")
+            return True
+        elif len(msg) < 40:
+            convo.update_state("bracket_format", msg)
+            return True
+
+    elif field == "has_names":
+        if any(w in msg_lower for w in ["yes", "yeah", "yep", "yup", "have", "ready", "sure", "got them", "i do"]):
+            convo.update_state("has_names", True)
+            convo.start_collecting_names()
+            return True
+        elif any(w in msg_lower for w in ["no", "nope", "don't", "dont", "auto", "assign", "number", "skip"]):
+            convo.update_state("has_names", False)
+            # Auto-assign labels and skip seeding entirely
+            labels = convo.build_auto_labels()
+            convo.update_state("player_names", labels)
+            convo.update_state("seeding_type", "random")
+            return True
+
+    elif field == "player_names":
+        # We are in name-collection phase — parse whatever they send
+        names = parse_names_from_message(msg)
+        if names:
+            convo.finish_collecting_names(names)
+            return True
+
+    elif field == "seeding_type":
+        if any(w in msg_lower for w in ["seed", "seeded", "order", "ranked", "ranking", "listed", "that order", "same order"]):
+            convo.update_state("seeding_type", "manual")
+            return True
+        elif any(w in msg_lower for w in ["random", "randomly", "draw", "shuffle", "mix"]):
+            convo.update_state("seeding_type", "random")
+            return True
+        elif len(msg) < 30:
+            # Short answer — default to random
+            convo.update_state("seeding_type", "random")
+            return True
+
+    elif field == "match_format":
+        if "best of 1" in msg_lower or "bo1" in msg_lower or msg_lower.strip() == "1":
+            convo.update_state("match_format", "Best of 1")
+            return True
+        elif "best of 3" in msg_lower or "bo3" in msg_lower or msg_lower.strip() == "3":
+            convo.update_state("match_format", "Best of 3")
+            return True
+        elif "best of 5" in msg_lower or "bo5" in msg_lower or msg_lower.strip() == "5":
+            convo.update_state("match_format", "Best of 5")
+            return True
+        elif len(msg) < 30:
+            convo.update_state("match_format", "Best of 1")
+            return True
+
+    return False
 
 
 class BracketBotAgent:
     """
     Manager agent that runs the full BracketBot conversation.
-
-    Responsibilities:
-    - Receive organizer messages and sanitize input
-    - Delegate to ConversationSubagent to track setup state
-    - Call FormatAdvisor to recommend bracket type when player count is known
-    - Trigger BracketEngine once organizer confirms setup
-    - Hand off to BracketProgressionSubagent for winner entry after bracket is live
-    - Maintain session memory for continuity within a conversation
+    Uses direct extraction for field capture, Gemini for conversational warmth.
     """
 
     def __init__(self):
-        """Initialize the Gemini model and empty session store."""
-        self.model = _configure_gemini()
-        # session_id -> { conversation, progression, history, bracket }
+        """Initialize the Gemini client and empty session store."""
+        self.client = _configure_gemini()
+        self.model_name = "gemini-1.5-flash"
         self.sessions: dict[str, dict] = {}
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def chat(self, user_message: str, session_id: str = "default") -> dict:
         """
-        Process one message from the organizer and return the agent response.
-
-        Args:
-            user_message: Raw text typed by the organizer
-            session_id:   Identifies the conversation (enables session memory)
+        Process one message and return the agent response.
 
         Returns:
-            {
-                "response": str,          # Text to display in the chat UI
-                "bracket":  dict | None,  # Bracket data when generated, else None
-                "state":    str,          # Current phase: setup | confirm | active | progression
-            }
+            { "response": str, "bracket": dict|None, "state": str }
         """
         session = self._get_or_create_session(session_id)
         convo: ConversationSubagent = session["conversation"]
         progression: BracketProgressionSubagent = session["progression"]
 
-        # Always sanitize before touching any logic
         clean = sanitize_input(user_message)
 
-        # --- PHASE: bracket is live, handle winner entry ---
+        # --- PHASE: bracket is live — handle winner entry ---
         if session["bracket"] is not None:
             result = progression.record_winner(clean, session["bracket"])
             session["bracket"] = result["bracket"]
@@ -98,15 +179,12 @@ class BracketBotAgent:
                 "state": "progression",
             }
 
-        # --- PHASE: setup — extract fields from organizer message ---
+        # --- PHASE: setup — extract the next missing field ---
+        next_field = convo.next_missing_field()
+        if next_field:
+            _direct_extract(clean, next_field, convo)
 
-        # Pull player count out of natural language if not yet known
-        if convo.state.get("player_count") is None:
-            count = extract_player_count(clean)
-            if count:
-                convo.update_state("player_count", count)
-
-        # If player count just became known, get format recommendation
+        # Get format recommendation once player count is known
         if (
             convo.state.get("player_count")
             and convo.state.get("bracket_format") is None
@@ -115,14 +193,12 @@ class BracketBotAgent:
             rec = format_advisor_tool(convo.state["player_count"])
             session["format_recommendation"] = rec
 
-        # Let Gemini extract any other fields from the message
-        self._extract_fields_with_gemini(clean, convo, session)
-
         # --- PHASE: all fields collected — check for confirmation ---
         if convo.is_complete() and not convo.confirmed:
             if self._is_confirmation(clean):
                 convo.confirmed = True
-                bracket = generate_bracket(convo.get_summary())
+                config = convo.get_summary()
+                bracket = generate_bracket(config)
                 session["bracket"] = bracket
                 return {
                     "response": BRACKET_INTRO.format(
@@ -132,42 +208,47 @@ class BracketBotAgent:
                     "state": "active",
                 }
             else:
-                # Show summary and ask for confirmation
-                summary = convo.get_summary()
-                response = CONFIRMATION_TEMPLATE.format(
-                    event_name=summary.get("event_name", "Your Tournament"),
-                    sport=summary.get("sport", "—"),
-                    individual_or_team=summary.get("individual_or_team", "—"),
-                    player_count=summary.get("player_count", "—"),
-                    bracket_format=summary.get("bracket_format", "—"),
-                    seeding_type=summary.get("seeding_type", "—"),
-                    match_format=summary.get("match_format", "—"),
-                )
-                return {"response": response, "bracket": None, "state": "confirm"}
+                return {
+                    "response": self._build_confirmation(convo),
+                    "bracket": None,
+                    "state": "confirm",
+                }
 
-        # --- PHASE: still collecting — ask next question ---
+        # --- PHASE: names just collected — trigger drag-and-drop seed widget ---
+        # If names were just saved and seeding_type is still missing, show the widget
+        if (
+            convo.state.get("player_names") is not None
+            and convo.state.get("has_names") is True
+            and convo.state.get("seeding_type") is None
+        ):
+            names = convo.state["player_names"]
+            kind = convo.state.get("individual_or_team", "individual")
+            label = "teams" if kind == "team" else "players"
+            return {
+                "response": (
+                    f"Got all {len(names)} {label}! "
+                    f"Drag to set your seed order — Seed 1 will face Seed {len(names)}, "
+                    f"Seed 2 faces Seed {len(names)-1}, and so on. "
+                    f"When you're happy with the order, click the button to generate."
+                ),
+                "bracket": None,
+                "state": "seeding",
+                "show_seed_widget": True,
+                "names": names,
+            }
+
+        # --- PHASE: still collecting — generate next question ---
         response = self._ask_next_question(clean, convo, session)
         return {"response": response, "bracket": None, "state": "setup"}
 
     def new_tournament(self, session_id: str) -> dict:
-        """
-        Reset a session so the organizer can set up a new tournament.
-        Called when the organizer clicks 'New Tournament' in the UI.
-        """
+        """Reset the session for a new tournament."""
         if session_id in self.sessions:
             del self.sessions[session_id]
-        return {
-            "response": GREETING,
-            "bracket": None,
-            "state": "setup",
-        }
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+        return {"response": GREETING, "bracket": None, "state": "setup"}
 
     def _get_or_create_session(self, session_id: str) -> dict:
-        """Return the existing session or create a fresh one."""
+        """Return existing session or create a fresh one."""
         if session_id not in self.sessions:
             self.sessions[session_id] = {
                 "conversation": ConversationSubagent(),
@@ -178,91 +259,141 @@ class BracketBotAgent:
             }
         return self.sessions[session_id]
 
-    def _extract_fields_with_gemini(
-        self, message: str, convo: ConversationSubagent, session: dict
-    ) -> None:
+    def _build_confirmation(self, convo: ConversationSubagent) -> str:
+        """Build the confirmation summary message."""
+        summary = convo.get_summary()
+        names = summary.get("player_names", [])
+        has_names = summary.get("has_names", False)
+
+        # Format the names display
+        if has_names and names:
+            name_display = f"Names entered: {len(names)} {'✓' if names else '—'}"
+        else:
+            kind = summary.get("individual_or_team", "individual")
+            label = "Team" if kind == "team" else "Competitor"
+            name_display = f"Names: Auto-assigned ({label} 1, {label} 2...)"
+
+        seeding = summary.get("seeding_type", "random")
+        seeding_display = "Seeded in listed order" if seeding == "manual" else "Random draw"
+
+        return (
+            f"Here's your tournament setup — does everything look right?\n\n"
+            f"**{summary.get('event_name', '—')}**\n"
+            f"Sport / Activity: {summary.get('sport', '—')}\n"
+            f"Tournament type: {summary.get('individual_or_team', '—')}\n"
+            f"Players / Teams: {summary.get('player_count', '—')}\n"
+            f"Bracket format: {summary.get('bracket_format', '—')}\n"
+            f"{name_display}\n"
+            f"Seeding: {seeding_display}\n"
+            f"Match format: {summary.get('match_format', '—')}\n\n"
+            f"Reply **yes** to generate your bracket, or tell me what you'd like to change."
+        )
+
+    def _call_gemini(self, prompt: str, session: dict) -> str:
         """
-        Ask Gemini to pull structured field values out of the organizer message.
-        Updates conversation state with anything Gemini finds.
-        Uses JSON mode so extraction is reliable and parseable.
+        Send a prompt to Gemini for a warm conversational response.
+        Falls back gracefully if the API call fails.
         """
-        # Only extract fields that are still missing
-        missing = [f for f in convo.state if convo.state[f] is None]
-        if not missing:
-            return
-
-        extraction_prompt = f"""
-Extract tournament setup information from this organizer message.
-Only extract values for these fields if they are clearly stated: {missing}
-
-Message: "{message}"
-
-Respond ONLY with a JSON object. Use null for fields not found.
-Example: {{"event_name": "Summer Slam", "sport": null, "player_count": null}}
-"""
         try:
-            result = self.model.generate_content(extraction_prompt)
-            raw = result.text.strip()
-            # Strip markdown code fences if present
-            raw = re.sub(r"```json|```", "", raw).strip()
-            extracted = json.loads(raw)
-            for field, value in extracted.items():
-                if value is not None and convo.state.get(field) is None:
-                    convo.update_state(field, value)
-        except (json.JSONDecodeError, Exception):
-            # Silent fallback — the conversation continues even if extraction fails
-            pass
+            contents = []
+            for h in session["history"][-6:]:
+                role = "user" if h["role"] == "user" else "model"
+                contents.append(
+                    types.Content(role=role, parts=[types.Part(text=h["parts"])])
+                )
+            contents.append(
+                types.Content(role="user", parts=[types.Part(text=prompt)])
+            )
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=MANAGER_SYSTEM_PROMPT,
+                    max_output_tokens=150,
+                    temperature=0.7,
+                ),
+            )
+            return response.text.strip()
+        except Exception:
+            return ""
 
     def _ask_next_question(
         self, message: str, convo: ConversationSubagent, session: dict
     ) -> str:
         """
-        Generate the next conversational response using Gemini.
-        Appends the next required question so the flow always moves forward.
+        Generate a warm conversational response and ask the next question.
+        Always falls back to the direct question so the flow never stalls.
         """
         next_q = convo.next_question()
+        if not next_q:
+            return "Got it! Let me put that together..."
 
-        # Build a prompt that gives Gemini the full context
+        # Build Gemini prompt
         format_rec = session.get("format_recommendation")
         format_hint = ""
         if format_rec and convo.state.get("bracket_format") is None:
             format_hint = (
-                f"Format recommendation for {convo.state.get('player_count')} players: "
-                f"{format_rec['recommendation']}. Reason: {format_rec['reason']}."
+                f"Suggest: {format_rec['recommendation']} "
+                f"({format_rec['reason']}). "
             )
 
-        prompt = f"""
-The organizer just said: "{message}"
+        # For the player names question — include the format hint in the question itself
+        if convo.next_missing_field() == "player_names":
+            # Don't call Gemini for this — the question has formatting examples
+            text = f"Got it! {next_q}"
+        else:
+            prompt = (
+                f'Organizer said: "{message}". '
+                f"State so far: {json.dumps({k: v for k, v in convo.get_summary().items() if k != 'player_names'}, default=str)}. "
+                f"{format_hint}"
+                f"Write ONE warm short sentence acknowledging what they said, "
+                f'then ask exactly this next question: "{next_q}" '
+                f"Do not add anything else."
+            )
+            gemini_text = self._call_gemini(prompt, session)
 
-Current setup state: {json.dumps(convo.get_summary(), default=str)}
-{format_hint}
+            if gemini_text and len(gemini_text) > 10:
+                text = gemini_text
+                if next_q not in text:
+                    text = f"{text} {next_q}"
+            else:
+                text = f"Got it! {next_q}"
 
-Next question to ask: {next_q}
-
-Write a short, warm response (1-2 sentences max) that acknowledges what they said
-and then asks the next question naturally. Do not add any extra questions.
-"""
-        try:
-            history = [
-                {"role": h["role"], "parts": [h["parts"]]}
-                for h in session["history"][-10:]  # Last 10 turns for context
-            ]
-            chat = self.model.start_chat(history=history)
-            response = chat.send_message(prompt)
-            text = response.text.strip()
-        except Exception as e:
-            text = f"Got it! {next_q}"  # Graceful fallback
-
-        # Store turn in history
         session["history"].append({"role": "user", "parts": message})
         session["history"].append({"role": "model", "parts": text})
 
         return text
 
     def _is_confirmation(self, message: str) -> bool:
-        """
-        Return True if the organizer is confirming the setup.
-        Matches common affirmative phrases.
-        """
+        """Return True if the organizer is confirming the setup."""
         pattern = r"\b(yes|yeah|yep|yup|correct|looks good|go ahead|do it|confirm|generate|create|let'?s go|perfect|great|approved|that'?s right|sounds good)\b"
         return bool(re.search(pattern, message.lower()))
+
+
+    def confirm_seed_order(self, names: list, session_id: str) -> dict:
+        """
+        Receive the final confirmed seed order from the drag-and-drop widget.
+        Stores names, sets seeding to manual, then asks for match format.
+        """
+        session = self._get_or_create_session(session_id)
+        convo: ConversationSubagent = session["conversation"]
+
+        # Store the confirmed seed order
+        convo.finish_collecting_names(names)
+        convo.update_state("seeding_type", "manual")
+
+        # Ask next question (match format)
+        next_q = convo.next_question()
+        if next_q:
+            return {
+                "response": f"Perfect — {len(names)} {'teams' if convo.state.get('individual_or_team') == 'team' else 'players'} locked in! {next_q}",
+                "bracket": None,
+                "state": "setup",
+            }
+
+        # If somehow complete, show confirmation
+        return {
+            "response": self._build_confirmation(convo),
+            "bracket": None,
+            "state": "confirm",
+        }
