@@ -1,4 +1,4 @@
-# 🐾 BracketBot — AI Tournament Setup Agent
+# <img src="docs/paw.svg" width="36" height="36" valign="middle"/> BracketBot — AI Tournament Setup Agent
 
 > Set up any tournament in minutes — just describe your event.
 
@@ -13,7 +13,7 @@
 ---
 
 ![BracketBot Demo](docs/bracketbot_demo.gif)
-*← Drop your demo GIF here after recording. Replace this line and the img tag above with your actual GIF.*
+_← Drop your demo GIF here after recording. Replace this line and the img tag above with your actual GIF._
 
 ---
 
@@ -130,29 +130,29 @@ See [docs/architecture.md](docs/architecture.md) for the full data flow diagram.
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|------------|
-| Agent framework | Google ADK |
-| LLM | Gemini 1.5 Flash |
-| Language | Python 3.11+ |
-| Web framework | Flask |
-| Deployment | Google Cloud Run |
-| Secret management | Google Secret Manager |
-| IDE | Antigravity IDE v2.0.4 |
-| Security | Bleach, Flask-Limiter, env vars |
+| Component         | Technology                      |
+| ----------------- | ------------------------------- |
+| Agent framework   | Google ADK                      |
+| LLM               | Gemini 1.5 Flash                |
+| Language          | Python 3.11+                    |
+| Web framework     | Flask                           |
+| Deployment        | Google Cloud Run                |
+| Secret management | Google Secret Manager           |
+| IDE               | Antigravity IDE v2.0.4          |
+| Security          | Bleach, Flask-Limiter, env vars |
 
 ---
 
 ## Capstone Concepts Demonstrated
 
-| Concept | How |
-|---------|-----|
-| ✅ Multi-agent system | Manager + 4 subagents via Google ADK |
-| ✅ Gemini API | Gemini 1.5 Flash for conversation + field extraction |
-| ✅ Antigravity IDE | Built and tested in Antigravity IDE v2.0.4 |
-| ✅ Cloud Run deployment | Live public URL, scales to zero |
-| ✅ Security | Input validation, rate limiting, Secret Manager, prompt injection protection |
-| ✅ Agent skill | PDF bracket export skill |
+| Concept                 | How                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| ✅ Multi-agent system   | Manager + 4 subagents via Google ADK                                         |
+| ✅ Gemini API           | Gemini 1.5 Flash for conversation + field extraction                         |
+| ✅ Antigravity IDE      | Built and tested in Antigravity IDE v2.0.4                                   |
+| ✅ Cloud Run deployment | Live public URL, scales to zero                                              |
+| ✅ Security             | Input validation, rate limiting, Secret Manager, prompt injection protection |
+| ✅ Agent skill          | PDF bracket export skill                                                     |
 
 ---
 
@@ -167,12 +167,14 @@ See [docs/architecture.md](docs/architecture.md) for the full data flow diagram.
 ## Setup — Run Locally
 
 **1. Clone the repo**
+
 ```bash
 git clone https://github.com/JVelezFD/Kag-bracketbot.git
 cd Kag-bracketbot
 ```
 
 **2. Create and activate a virtual environment**
+
 ```bash
 python -m venv venv
 source venv/Scripts/activate   # Windows (Git Bash)
@@ -180,23 +182,29 @@ source venv/bin/activate        # Mac / Linux
 ```
 
 **3. Install dependencies**
+
 ```bash
 pip install -r requirements.txt
 ```
 
 **4. Add your Gemini API key**
+
 ```bash
 cp .env.example .env
 ```
+
 Open `.env` and add your key:
+
 ```
 GEMINI_API_KEY=your_key_here
 ```
 
 **5. Run locally**
+
 ```bash
 python main.py
 ```
+
 Open your browser to `http://localhost:8080`
 
 ---
@@ -204,10 +212,12 @@ Open your browser to `http://localhost:8080`
 ## Deploy to Cloud Run
 
 **Prerequisites:**
+
 - Google Cloud project with billing enabled
 - `gcloud` CLI installed and authenticated
 
 **1. Enable required APIs**
+
 ```bash
 gcloud services enable run.googleapis.com
 gcloud services enable cloudbuild.googleapis.com
@@ -215,11 +225,13 @@ gcloud services enable secretmanager.googleapis.com
 ```
 
 **2. Store your API key securely**
+
 ```bash
 printf '%s' 'YOUR_GEMINI_API_KEY' | gcloud secrets create gemini-api-key --data-file=-
 ```
 
 **3. Grant Cloud Run access to the secret**
+
 ```bash
 gcloud secrets add-iam-policy-binding gemini-api-key \
   --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
@@ -227,6 +239,7 @@ gcloud secrets add-iam-policy-binding gemini-api-key \
 ```
 
 **4. Deploy**
+
 ```bash
 gcloud run deploy bracketbot \
   --source . \
@@ -299,5 +312,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-*Built by [Fierce Den](https://fiercedenco) for the Kaggle 5-Day AI Agents Capstone, 2026.*
-*Powered by Google ADK, Gemini 1.5 Flash, and Google Cloud Run.*
+_Built by [JVelezFD]() for the Kaggle 5-Day AI Agents Capstone, 2026._
+_Powered by Google ADK, Gemini 1.5 Flash, and Google Cloud Run._
