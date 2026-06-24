@@ -13,7 +13,6 @@
 ---
 
 ![BracketBot Demo](docs/bracketbot_demo.gif)
-_← Drop your demo GIF here after recording. Replace this line and the img tag above with your actual GIF._
 
 ---
 
@@ -29,12 +28,16 @@ BracketBot fixes this with a five-minute conversation.
 
 - Guides organizers through setup **one question at a time** — never overwhelming
 - Recommends the right bracket format based on player count
-- Collects team or player names with **drag and drop seed ordering**
-- Supports **Single Elimination, Double Elimination, Round Robin, and Pool Play** (32+ players)
+- Asks if you have names ready — collects them via comma or paste, or auto-assigns Team 1, Team 2...
+- **Drag and drop seed ordering** — reorder teams before the bracket locks in
 - Uses standard tournament seeding — Seed 1 vs Seed 8, Seed 2 vs Seed 7
+- Supports **Single Elimination, Double Elimination, Round Robin, and Pool Play** (32+ players)
+- Double Elimination works for 4, 8, 16, and 32 teams — BracketBot flags other counts and asks you to adjust
 - Generates a complete visual bracket on organizer confirmation
-- Handles **winner entry** and advances the bracket automatically
-- Downloads a **branded PDF bracket** ready to print and hand to a scorekeeper
+- Handles **winner entry** and advances the bracket automatically — winners bracket and losers bracket
+- Accepts natural language results: `"Thunderbolts won"`, `"Rally Cats lost"`, `"Spike Kings beat Net Ninjas"`
+- **Undo** — type `undo` to reverse the last result (up to 5 back)
+- Downloads a **branded PDF bracket** — dark FD theme, ready to print and hand to a scorekeeper
 
 ---
 
@@ -76,30 +79,48 @@ BracketBot: Do you have the team names ready? Reply yes to enter them,
 
 Organizer:  yes
 
-BracketBot: Go ahead and list all 8 teams — comma or line separated:
+BracketBot: Go ahead and list all 8 teams — comma or line separated.
 
 Organizer:  Thunderbolts, Spike Kings, Net Ninjas, Sand Sharks,
             Block Party, Ace Squad, Dig Deep, Rally Cats
 
-BracketBot: [Drag and drop seed order widget appears — organizer reorders teams]
-            Got it! 8 teams locked in. What's the match format —
+BracketBot: [Drag and drop seed order widget appears]
+            Drag to reorder — Seed 1 faces Seed 8, Seed 2 faces Seed 7.
+            Click "Looks good — generate my bracket" when ready.
+
+Organizer:  [Reorders a couple of teams, clicks generate]
+
+BracketBot: Perfect — 8 teams locked in! What's the match format —
             Best of 1, Best of 3, or Best of 5?
 
-Organizer:  Best of 3
+Organizer:  Best of 1
 
-BracketBot: Here's your tournament setup — does everything look right?
+BracketBot: Here's your setup — does everything look right?
 
-            Spring Showdown
-            Sport: Volleyball | Teams: 8 | Type: team
-            Format: Double Elimination | Seeding: manual | Best of 3
+            Spring Showdown | Volleyball | 8 teams
+            Double Elimination | Seeded order | Best of 1
 
             Reply yes to generate your bracket.
 
 Organizer:  yes
 
 BracketBot: Your bracket is ready! Here's Spring Showdown 🏆
-            [Full bracket renders on the right panel]
+            [Full bracket renders — Winners Bracket + Losers Bracket + Grand Final]
             [Download Bracket PDF button available]
+
+Organizer:  Thunderbolts won
+
+BracketBot: ✅ Thunderbolts advances in the winners bracket.
+            ❌ Rally Cats drops to the losers bracket — still alive!
+
+Organizer:  undo
+
+BracketBot: ↩️ Last result undone. The bracket has been restored.
+
+Organizer:  Rally Cats won
+
+BracketBot: ✅ Rally Cats advances in the winners bracket.
+            ❌ Thunderbolts drops to the losers bracket — still alive!
 ```
 
 ---
@@ -130,29 +151,29 @@ See [docs/architecture.md](docs/architecture.md) for the full data flow diagram.
 
 ## Tech Stack
 
-| Component         | Technology                      |
-| ----------------- | ------------------------------- |
-| Agent framework   | Google ADK                      |
-| LLM               | Gemini 1.5 Flash                |
-| Language          | Python 3.11+                    |
-| Web framework     | Flask                           |
-| Deployment        | Google Cloud Run                |
-| Secret management | Google Secret Manager           |
-| IDE               | Antigravity IDE v2.0.4          |
-| Security          | Bleach, Flask-Limiter, env vars |
+| Component | Technology |
+|-----------|------------|
+| Agent framework | Google ADK |
+| LLM | Gemini 1.5 Flash |
+| Language | Python 3.11+ |
+| Web framework | Flask |
+| Deployment | Google Cloud Run |
+| Secret management | Google Secret Manager |
+| IDE | Antigravity IDE v2.0.4 |
+| Security | Bleach, Flask-Limiter, env vars |
 
 ---
 
 ## Capstone Concepts Demonstrated
 
-| Concept                 | How                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| ✅ Multi-agent system   | Manager + 4 subagents via Google ADK                                         |
-| ✅ Gemini API           | Gemini 1.5 Flash for conversation + field extraction                         |
-| ✅ Antigravity IDE      | Built and tested in Antigravity IDE v2.0.4                                   |
-| ✅ Cloud Run deployment | Live public URL, scales to zero                                              |
-| ✅ Security             | Input validation, rate limiting, Secret Manager, prompt injection protection |
-| ✅ Agent skill          | PDF bracket export skill                                                     |
+| Concept | How |
+|---------|-----|
+| ✅ Multi-agent system | Manager + 4 subagents via Google ADK |
+| ✅ Gemini API | Gemini 1.5 Flash for conversation + field extraction |
+| ✅ Antigravity IDE | Built and tested in Antigravity IDE v2.0.4 |
+| ✅ Cloud Run deployment | Live public URL, scales to zero |
+| ✅ Security | Input validation, rate limiting, Secret Manager, prompt injection protection |
+| ✅ Agent skill | PDF bracket export skill |
 
 ---
 
@@ -167,14 +188,12 @@ See [docs/architecture.md](docs/architecture.md) for the full data flow diagram.
 ## Setup — Run Locally
 
 **1. Clone the repo**
-
 ```bash
 git clone https://github.com/JVelezFD/Kag-bracketbot.git
 cd Kag-bracketbot
 ```
 
 **2. Create and activate a virtual environment**
-
 ```bash
 python -m venv venv
 source venv/Scripts/activate   # Windows (Git Bash)
@@ -182,29 +201,23 @@ source venv/bin/activate        # Mac / Linux
 ```
 
 **3. Install dependencies**
-
 ```bash
 pip install -r requirements.txt
 ```
 
 **4. Add your Gemini API key**
-
 ```bash
 cp .env.example .env
 ```
-
 Open `.env` and add your key:
-
 ```
 GEMINI_API_KEY=your_key_here
 ```
 
 **5. Run locally**
-
 ```bash
 python main.py
 ```
-
 Open your browser to `http://localhost:8080`
 
 ---
@@ -212,12 +225,10 @@ Open your browser to `http://localhost:8080`
 ## Deploy to Cloud Run
 
 **Prerequisites:**
-
 - Google Cloud project with billing enabled
 - `gcloud` CLI installed and authenticated
 
 **1. Enable required APIs**
-
 ```bash
 gcloud services enable run.googleapis.com
 gcloud services enable cloudbuild.googleapis.com
@@ -225,13 +236,11 @@ gcloud services enable secretmanager.googleapis.com
 ```
 
 **2. Store your API key securely**
-
 ```bash
 printf '%s' 'YOUR_GEMINI_API_KEY' | gcloud secrets create gemini-api-key --data-file=-
 ```
 
 **3. Grant Cloud Run access to the secret**
-
 ```bash
 gcloud secrets add-iam-policy-binding gemini-api-key \
   --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
@@ -239,7 +248,6 @@ gcloud secrets add-iam-policy-binding gemini-api-key \
 ```
 
 **4. Deploy**
-
 ```bash
 gcloud run deploy bracketbot \
   --source . \
@@ -312,5 +320,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-_Built by [JVelezFD]() for the Kaggle 5-Day AI Agents Capstone, 2026._
-_Powered by Google ADK, Gemini 1.5 Flash, and Google Cloud Run._
+*Built by [JVelezFD]() for the Kaggle 5-Day AI Agents Capstone, 2026.*
+*Powered by Google ADK, Gemini 1.5 Flash, and Google Cloud Run.*
