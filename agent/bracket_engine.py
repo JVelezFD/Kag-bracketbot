@@ -36,6 +36,10 @@ def generate_bracket(config: dict) -> dict:
     elif "pool" in bracket_format:
         return _generate_pool_play(config, participants)
     elif "double" in bracket_format:
+        # Auto-redirect to pool play for 32+ players
+        if player_count > 32:
+            return _generate_pool_play(config, participants)
+        # All other counts — double elimination with losers byes for odd numbers
         return _generate_double_elimination(config, participants)
     else:
         return _generate_single_elimination(config, participants)
@@ -208,14 +212,28 @@ def _advance_byes(rounds: list) -> list:
 
 def _generate_double_elimination(config: dict, participants: list) -> dict:
     """
-    Build a double elimination bracket.
+    Build a proper double elimination bracket.
     Every participant must lose twice to be eliminated.
+
+    Handles odd player counts by giving byes in the losers bracket too —
+    when a winners bracket match is a BYE, the corresponding losers bracket
+    slot also gets a BYE and auto-advances. This keeps true double elimination
+    for all real players regardless of count.
+
+    Uses bracket_size (power of 2) for losers bracket math so match counts
+    are always powers of 2, ensuring clean advancement at any player count.
     """
     winners = _generate_single_elimination(config, participants)
+    winners_rounds = winners["rounds"]
+    num_winners_rounds = len(winners_rounds)
+    num_losers_rounds = max(1, 2 * (num_winners_rounds - 1))
 
-    # Losers bracket mirrors winners bracket depth
+    # Use bracket_size (power of 2) for losers match counts
+    bracket_size = winners["bracket_size"]
+    matches_in_round = max(1, bracket_size // 4)
     losers_rounds = []
-    for i, r in enumerate(winners["rounds"][:-1]):
+
+    for i in range(num_losers_rounds):
         losers_rounds.append({
             "round": i + 1,
             "label": f"Losers Round {i + 1}",
@@ -226,23 +244,25 @@ def _generate_double_elimination(config: dict, participants: list) -> dict:
                     "player2": "TBD",
                     "winner": None,
                 }
-                for j in range(max(1, len(r["matchups"]) // 2))
+                for j in range(max(1, matches_in_round))
             ],
         })
+        if (i + 1) % 2 == 0:
+            matches_in_round = max(1, matches_in_round // 2)
 
     return {
         "format": "Double Elimination",
         "event_name": config.get("event_name", "Tournament"),
         "player_count": len(participants),
         "match_format": config.get("match_format", "Best of 1"),
-        "winners_bracket": winners["rounds"],
+        "winners_bracket": winners_rounds,
         "losers_bracket": losers_rounds,
         "grand_final": {
             "player1": "Winners Champion",
             "player2": "Losers Champion",
             "winner": None,
         },
-        "total_rounds": len(winners["rounds"]) + len(losers_rounds) + 1,
+        "total_rounds": num_winners_rounds + num_losers_rounds + 1,
     }
 
 

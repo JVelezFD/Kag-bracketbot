@@ -193,6 +193,41 @@ class BracketBotAgent:
             rec = format_advisor_tool(convo.state["player_count"])
             session["format_recommendation"] = rec
 
+        # --- DOUBLE ELIMINATION PLAYER COUNT CHECK ---
+        # Double Elimination works correctly only with power-of-2 player counts
+        # (4, 8, 16, 32). Other counts create bye gaps in the losers bracket.
+        # Catch this early and ask the organizer to adjust.
+        player_count = convo.state.get("player_count")
+        bracket_format = convo.state.get("bracket_format", "")
+        if (
+            player_count
+            and "double" in str(bracket_format).lower()
+            and "pool" not in str(bracket_format).lower()
+            and not session.get("de_count_flagged")
+        ):
+            is_power_of_2 = player_count > 0 and (player_count & (player_count - 1)) == 0
+            if not is_power_of_2:
+                session["de_count_flagged"] = True
+                # Clear bracket format so organizer can re-pick after adjusting
+                convo.update_state("bracket_format", None)
+                kind = convo.state.get("individual_or_team", "individual")
+                label = "teams" if kind == "team" else "players"
+                # Find nearest power-of-2 options
+                import math
+                lower = 2 ** math.floor(math.log2(player_count))
+                upper = 2 ** math.ceil(math.log2(player_count))
+                return {
+                    "response": (
+                        f"Double Elimination works best with **{lower}** or **{upper}** {label} "
+                        f"(powers of 2 keep the bracket perfectly balanced). "
+                        f"You have **{player_count}** — would you like to adjust to "
+                        f"**{lower}** or **{upper}**? "
+                        f"Or I can use **Single Elimination**, which handles any number cleanly."
+                    ),
+                    "bracket": None,
+                    "state": "setup",
+                }
+
         # --- PHASE: all fields collected — check for confirmation ---
         if convo.is_complete() and not convo.confirmed:
             if self._is_confirmation(clean):
@@ -200,10 +235,15 @@ class BracketBotAgent:
                 config = convo.get_summary()
                 bracket = generate_bracket(config)
                 session["bracket"] = bracket
+
+                # Check if bracket engine auto-switched the format
+                note = bracket.get("note", "")
+                response = BRACKET_INTRO.format(event_name=convo.state["event_name"])
+                if note:
+                    response += f"\n\n⚠️ {note}"
+
                 return {
-                    "response": BRACKET_INTRO.format(
-                        event_name=convo.state["event_name"]
-                    ),
+                    "response": response,
                     "bracket": bracket,
                     "state": "active",
                 }
